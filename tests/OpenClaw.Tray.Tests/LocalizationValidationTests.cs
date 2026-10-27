@@ -27,6 +27,8 @@ public class LocalizationValidationTests
 
     private static readonly HashSet<string> InvariantOrDeferredResourceKeys = new(StringComparer.Ordinal)
     {
+        // W365 Managed is the product connection-type label in every locale.
+        "ConnectionPage_W365Managed.Text",
         // Updater dependency recovery is seeded in English across every locale.
         // Translate the explanation and manual-release action together after review.
         "Update_Message_Unavailable",
@@ -625,6 +627,8 @@ public class LocalizationValidationTests
     private static bool IsInvariantOrDeferred(string key, string value) =>
         InvariantOrDeferredResourceKeys.Contains(key)
         || IsInvariantValue(value)
+        // Managed source integration is consistently seeded in English pending locale review.
+        || key.StartsWith("ManagedRemote_", StringComparison.Ordinal)
         || key.StartsWith("ChannelsPage_", StringComparison.Ordinal)
         || key.StartsWith("DiagnosticsPage_", StringComparison.Ordinal)
         || key.StartsWith("SettingsRow_", StringComparison.Ordinal)

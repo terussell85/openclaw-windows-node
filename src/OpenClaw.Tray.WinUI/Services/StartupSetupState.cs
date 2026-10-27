@@ -127,6 +127,8 @@ internal static class StartupSetupState
 
     public static bool RequiresSetup(SettingsManager settings, string dataPath, GatewayRegistry? registry)
     {
+        if (settings.ManagedRemote is { Enabled: true })
+            return false;
         if (settings.EnableMcpServer)
         {
             return false;

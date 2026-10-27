@@ -147,15 +147,18 @@ public sealed class GatewayClientChatBridge : IChatGatewayBridge
     private volatile ConnectionStatus _currentStatus = ConnectionStatus.Disconnected;
     private ModelsListInfo? _currentModels;
     private readonly Func<Uri, Task<bool>> _launchUri;
+    private readonly Func<ChatMediaContentInfo, CancellationToken, Task<string?>> _selectManagedDestination;
     private bool _disposed;
 
     public GatewayClientChatBridge(
         OpenClawGatewayClient client,
-        Func<Uri, Task<bool>>? launchUri = null)
+        Func<Uri, Task<bool>>? launchUri = null,
+        Func<ChatMediaContentInfo, CancellationToken, Task<string?>>? selectManagedDestination = null)
     {
         _client = client;
         PlacementGateway = client.CreateChatPlacementGateway();
         _launchUri = launchUri ?? LaunchWithDefaultBrowserAsync;
+        _selectManagedDestination = selectManagedDestination ?? SelectManagedDestinationAsync;
         _statusChangedHandler = (s, e) =>
         {
             _currentStatus = e;
@@ -301,19 +304,36 @@ public sealed class GatewayClientChatBridge : IChatGatewayBridge
 #if OPENCLAW_TRAY_TESTS
     // The test host has no WinRT launcher; tests inject one through the constructor.
     private static Task<bool> LaunchWithDefaultBrowserAsync(Uri uri) => Task.FromResult(false);
+    private static Task<string?> SelectManagedDestinationAsync(ChatMediaContentInfo media, CancellationToken ct) =>
+        Task.FromResult<string?>(null);
 #else
     private static async Task<bool> LaunchWithDefaultBrowserAsync(Uri uri) =>
         await global::Windows.System.Launcher.LaunchUriAsync(uri);
+    private static Task<string?> SelectManagedDestinationAsync(ChatMediaContentInfo media, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var name = System.IO.Path.GetFileName(media.FileName ?? "download");
+        foreach (var c in System.IO.Path.GetInvalidFileNameChars())
+            name = name.Replace(c, '_');
+        return OpenClawTray.Helpers.Win32FilePickerHelper.PickSaveFileAsync(
+            IntPtr.Zero,
+            OpenClawTray.Helpers.LocalizationHelper.GetString("ManagedRemote_SaveFile"),
+            name, System.IO.Path.GetExtension(name).TrimStart('.'),
+            OpenClawTray.Helpers.LocalizationHelper.GetString("ManagedRemote_AllFiles"), "*.*");
+    }
 #endif
 
     public Task<AssistantFileDownloadStatus> DownloadAssistantFileAsync(
         string sessionKey,
         ChatMediaContentInfo media,
         CancellationToken cancellationToken = default) =>
-        AssistantFileDownloadLauncher.DownloadAsync(
-            ct => _client.ResolveAssistantFileDownloadUriAsync(sessionKey, media, ct),
-            _launchUri,
-            cancellationToken);
+        _client.TransportAuthentication is not null
+            ? _client.SaveManagedAssistantFileAsync(sessionKey, media,
+                ct => _selectManagedDestination(media, ct), cancellationToken)
+            : AssistantFileDownloadLauncher.DownloadAsync(
+                ct => _client.ResolveAssistantFileDownloadUriAsync(sessionKey, media, ct),
+                _launchUri,
+                cancellationToken);
 
     public Task SendChatAbortAsync(string runId, string? sessionKey = null) => _client.SendChatAbortAsync(runId, sessionKey);
 

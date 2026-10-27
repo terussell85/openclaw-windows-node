@@ -56,6 +56,8 @@ public sealed class GatewayConnectionManager :
     private readonly ConnectionDiagnostics _diagnostics;
     private readonly ICredentialResolver _credentialResolver;
     private readonly IGatewayClientFactory _clientFactory;
+    private readonly IManagedGatewayProvider? _managedGatewayProvider;
+    private CancellationTokenSource? _managedPreparationCts;
     private readonly GatewayRegistry _registry;
     private readonly IOpenClawLogger _logger;
     private readonly INativeGatewayRuntime? _nativeGatewayRuntime;
@@ -80,6 +82,8 @@ public sealed class GatewayConnectionManager :
     private readonly object _operatorFailureLock = new();
     private readonly object _operatorProtocolCompatibilityLock = new();
     private readonly object _connectionIntentLock = new();
+    private long _connectionIntentEpoch;
+    private CancellationTokenSource _connectionIntentCancellation = new();
     private readonly HashSet<string> _userDisconnectedGatewayIds = new(StringComparer.Ordinal);
     // Shared exclusive lease serializing destructive gateway lifecycle operations (manual WSL
     // start/stop/restart vs auto-repair distro restart). _manualLeaseHolders counts manual holders so
@@ -136,10 +140,12 @@ public sealed class GatewayConnectionManager :
         TimeSpan? manualSshRestartTimeout = null,
         TimeSpan? manualSshRestartCleanupTimeout = null,
         INativeGatewayRuntime? nativeGatewayRuntime = null,
-        TimeProvider? credentialHandoffTimeProvider = null)
+        TimeProvider? credentialHandoffTimeProvider = null,
+        IManagedGatewayProvider? managedGatewayProvider = null)
     {
         _credentialResolver = credentialResolver ?? throw new ArgumentNullException(nameof(credentialResolver));
         _clientFactory = clientFactory ?? throw new ArgumentNullException(nameof(clientFactory));
+        _managedGatewayProvider = managedGatewayProvider;
         _registry = registry ?? throw new ArgumentNullException(nameof(registry));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _nativeGatewayRuntime = nativeGatewayRuntime;
@@ -248,12 +254,13 @@ public sealed class GatewayConnectionManager :
     public async Task ConnectAsync(string? gatewayId, CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
+        SupersedeConnectionIntent();
         await _transitionSemaphore.WaitAsync(cancellationToken);
         try
         {
             var targetId = gatewayId ?? _registry.ActiveGatewayId;
             if (targetId is not null)
-                SetGatewayConnectionIntent(targetId, shouldBeConnected: true);
+                SetGatewayConnectionIntentCore(targetId, shouldBeConnected: true);
             await ConnectCoreAsync(gatewayId, "connect", cancellationToken);
         }
         finally
@@ -358,6 +365,31 @@ public sealed class GatewayConnectionManager :
 
             // Dispose old client
             await DisposeActiveClientAsync();
+            if (record.ManagedRemote is not null)
+            {
+                using var preparation = CancellationTokenSource.CreateLinkedTokenSource(newOperationCts.Token);
+                Volatile.Write(ref _managedPreparationCts, preparation);
+                try
+                {
+                    if (_managedGatewayProvider is null)
+                        throw new ManagedConnectionException(ManagedConnectionState.SetupRequired);
+                    record = await _managedGatewayProvider.PrepareAsync(record, preparation.Token)
+                        .ConfigureAwait(false);
+                    id = record.Id;
+                    SetGatewayConnectionIntentCore(id, shouldBeConnected: true);
+                }
+                catch (ManagedConnectionException ex)
+                {
+                    _stateMachine.TryTransition(ConnectionTrigger.ConnectRequested);
+                    _stateMachine.TryTransition(ConnectionTrigger.AuthenticationFailed, ex.Message);
+                    EmitStateChanged();
+                    return;
+                }
+                finally
+                {
+                    Interlocked.CompareExchange(ref _managedPreparationCts, null, preparation);
+                }
+            }
             await PrepareNativeGatewayTargetAsync(record);
             StartOperatorTelemetryAttempt(operation, gen);
 
@@ -606,6 +638,11 @@ public sealed class GatewayConnectionManager :
                     clientCredential,
                     perGatewayIdentityDir,
                     diagLogger);
+                if (record.ManagedRemote is not null)
+                {
+                    lifecycle.DataClient.TransportAuthentication = _managedGatewayProvider!.CreateAuthentication(record);
+                    lifecycle.DataClient.RequiredOperatorScopes = ManagedOperatorGrant.Scopes;
+                }
             }
             catch (DeviceIdentityLoadException ex)
             {
@@ -836,6 +873,12 @@ public sealed class GatewayConnectionManager :
         if (record == null)
         {
             _logger.Warn($"[ConnMgr] Gateway {id} not found in registry for node-only connect");
+            return null;
+        }
+        if (record.ManagedRemote is not null)
+        {
+            _stateMachine.SetNodeEnabled(false);
+            EmitStateChanged();
             return null;
         }
 
@@ -1085,6 +1128,7 @@ public sealed class GatewayConnectionManager :
         try
         {
             if (!ReferenceEquals(CurrentSnapshot, expected)) return false;
+            SupersedeConnectionIntent();
             await DisconnectCoreAsync();
             return true;
         }
@@ -1094,6 +1138,8 @@ public sealed class GatewayConnectionManager :
     public async Task DisconnectAsync()
     {
         ThrowIfDisposed();
+        SupersedeConnectionIntent();
+        CancelManagedPreparation();
         await _transitionSemaphore.WaitAsync();
         try
         {
@@ -1108,12 +1154,14 @@ public sealed class GatewayConnectionManager :
     public async Task DisconnectByUserAsync()
     {
         ThrowIfDisposed();
+        SupersedeConnectionIntent();
+        CancelManagedPreparation();
         await _transitionSemaphore.WaitAsync();
         try
         {
             var gatewayId = _registry.ActiveGatewayId;
             if (gatewayId is not null)
-                SetGatewayConnectionIntent(gatewayId, shouldBeConnected: false);
+                SetGatewayConnectionIntentCore(gatewayId, shouldBeConnected: false);
             await DisconnectCoreAsync(stopNativeGateway: true);
         }
         finally
@@ -1151,12 +1199,13 @@ public sealed class GatewayConnectionManager :
     public async Task ReconnectAsync()
     {
         ThrowIfDisposed();
+        SupersedeConnectionIntent();
         await _transitionSemaphore.WaitAsync();
         try
         {
             var gatewayId = _registry.ActiveGatewayId;
             if (gatewayId is not null)
-                SetGatewayConnectionIntent(gatewayId, shouldBeConnected: true);
+                SetGatewayConnectionIntentCore(gatewayId, shouldBeConnected: true);
             await DisconnectCoreAsync();
             await ConnectCoreAsync(operation: "reconnect");
         }
@@ -1261,6 +1310,7 @@ public sealed class GatewayConnectionManager :
     public async Task<bool> RestartSshTunnelAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
+        SupersedeConnectionIntent();
         var restartGeneration = Interlocked.Increment(ref _manualSshRestartGeneration);
         using var restartCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         restartCts.CancelAfter(_manualSshRestartTimeout);
@@ -1325,7 +1375,7 @@ public sealed class GatewayConnectionManager :
                 }
 
                 var stoppedTunnelGeneration = _tunnelManager.OwnershipGeneration;
-                SetGatewayConnectionIntent(activeRecord.Id, shouldBeConnected: true);
+                SetGatewayConnectionIntentCore(activeRecord.Id, shouldBeConnected: true);
                 await DisconnectCoreAsync().ConfigureAwait(false);
                 if (restartGeneration != Interlocked.Read(ref _manualSshRestartGeneration) ||
                     !IsCurrentSshRegistryRecord(activeRecord) ||
@@ -1525,6 +1575,13 @@ public sealed class GatewayConnectionManager :
 
     public void SetGatewayConnectionIntent(string gatewayId, bool shouldBeConnected)
     {
+        if (string.IsNullOrWhiteSpace(gatewayId)) return;
+        SupersedeConnectionIntent();
+        SetGatewayConnectionIntentCore(gatewayId, shouldBeConnected);
+    }
+
+    private void SetGatewayConnectionIntentCore(string gatewayId, bool shouldBeConnected)
+    {
         if (string.IsNullOrWhiteSpace(gatewayId))
             return;
 
@@ -1601,20 +1658,77 @@ public sealed class GatewayConnectionManager :
     public async Task SwitchGatewayAsync(string gatewayId)
     {
         ThrowIfDisposed();
+        SupersedeConnectionIntent();
+        CancelManagedPreparation();
         using var lifecycleLease = await BeginManualGatewayLifecycleOperationAsync();
         await _transitionSemaphore.WaitAsync();
         try
         {
+            await SwitchGatewayCoreAsync(gatewayId, CancellationToken.None);
+        }
+        finally
+        {
+            _transitionSemaphore.Release();
+        }
+    }
+
+    public GatewayConnectionIntent CaptureConnectionIntent()
+    {
+        lock (_connectionIntentLock)
+        {
+            ThrowIfDisposed();
+            return new GatewayConnectionIntent(this, _connectionIntentEpoch, _connectionIntentCancellation.Token);
+        }
+    }
+
+    public async Task<bool> SwitchGatewayIfIntentCurrentAsync(
+        string gatewayId, GatewayConnectionIntent intent, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+        ThrowIfDisposed();
+        using var waiting = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, intent.CancellationToken);
+        try
+        {
+            using var lifecycleLease = await BeginManualGatewayLifecycleOperationAsync(waiting.Token);
+            await _transitionSemaphore.WaitAsync(waiting.Token);
+            try
+            {
+                CancellationTokenSource previous;
+                CancellationTokenSource execution;
+                lock (_connectionIntentLock)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!intent.Matches(this, _connectionIntentEpoch)) return false;
+                    previous = AdvanceConnectionIntentUnderLock();
+                    execution = CancellationTokenSource.CreateLinkedTokenSource(
+                        cancellationToken, _connectionIntentCancellation.Token);
+                }
+                CancelRetiredConnectionIntent(previous);
+                using (execution)
+                    return await SwitchGatewayCoreAsync(gatewayId, execution.Token);
+            }
+            finally { _transitionSemaphore.Release(); }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested &&
+            intent.CancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+    }
+
+    private async Task<bool> SwitchGatewayCoreAsync(string gatewayId, CancellationToken cancellationToken)
+    {
+            cancellationToken.ThrowIfCancellationRequested();
             if (_registry.GetById(gatewayId) == null)
             {
                 _logger.Warn($"[ConnMgr] Cannot switch gateway — record {gatewayId} not found");
                 _diagnostics.Record("state", "Switch gateway failed", $"Gateway record not found: {gatewayId}");
-                return;
+                return false;
             }
-
             var previousActiveId = _registry.ActiveGatewayId;
             _diagnostics.Record("state", $"Switching active gateway to {gatewayId}");
-            SetGatewayConnectionIntent(gatewayId, shouldBeConnected: true);
+            SetGatewayConnectionIntentCore(gatewayId, shouldBeConnected: true);
+            cancellationToken.ThrowIfCancellationRequested();
             _registry.SetActive(gatewayId);
             try
             {
@@ -1625,7 +1739,7 @@ public sealed class GatewayConnectionManager :
                 _registry.SetActive(previousActiveId);
                 _logger.Warn($"[ConnMgr] Failed to persist active gateway switch: {ex.Message}");
                 _diagnostics.Record("state", "Switch gateway failed", $"Could not persist active gateway: {ex.Message}");
-                return;
+                return false;
             }
 
             await DisconnectCoreAsync();
@@ -1641,17 +1755,15 @@ public sealed class GatewayConnectionManager :
                 }
                 catch (Exception ex) { _logger.Warn($"[ConnMgr] Tunnel stop error on gateway switch: {ex.Message}"); }
             }
-            await ConnectCoreAsync(gatewayId);
-        }
-        finally
-        {
-            _transitionSemaphore.Release();
-        }
+            cancellationToken.ThrowIfCancellationRequested();
+            await ConnectCoreAsync(gatewayId, externalCancellationToken: cancellationToken);
+            return true;
     }
 
     public async Task<SetupCodeResult> ApplySetupCodeAsync(string setupCode, SshTunnelConfig? sshTunnel = null)
     {
         ThrowIfDisposed();
+        SupersedeConnectionIntent();
 
         // 1. Decode setup code
         var decoded = SetupCodeDecoder.Decode(setupCode);
@@ -1701,7 +1813,7 @@ public sealed class GatewayConnectionManager :
                 _logger.Warn($"[ConnMgr] Failed to persist setup-code gateway update: {ex.Message}");
                 return new SetupCodeResult(SetupCodeOutcome.ConnectionFailed, ex.Message);
             }
-            SetGatewayConnectionIntent(recordId, shouldBeConnected: true);
+            SetGatewayConnectionIntentCore(recordId, shouldBeConnected: true);
 
             // 3. Disconnect current gateway only after the new active gateway is persisted.
             await DisconnectCoreAsync();
@@ -1758,6 +1870,7 @@ public sealed class GatewayConnectionManager :
         Func<GatewayRecord, CancellationToken, Task>? onGatewayCommitted)
     {
         ThrowIfDisposed();
+        SupersedeConnectionIntent();
 
         if (!GatewayUrlHelper.IsValidGatewayUrl(gatewayUrl))
             return new SetupCodeResult(SetupCodeOutcome.InvalidUrl, "Invalid gateway URL");
@@ -1913,7 +2026,7 @@ public sealed class GatewayConnectionManager :
                     isolatedValidationTunnel = null;
                     isolatedValidationConfig = null;
                 }
-                SetGatewayConnectionIntent(recordId, shouldBeConnected: true);
+                SetGatewayConnectionIntentCore(recordId, shouldBeConnected: true);
 
                 // Disconnect current gateway only after replacement credentials have been validated and persisted.
                 await DisconnectCoreAsync();
@@ -2954,7 +3067,8 @@ public sealed class GatewayConnectionManager :
 
     private bool SyncNodeIntentFromSettings()
     {
-        var enabled = _isNodeEnabled?.Invoke() ?? false;
+        var enabled = _registry.GetById(_activeGatewayRecordId ?? _registry.ActiveGatewayId ?? "")?.ManagedRemote is null &&
+            (_isNodeEnabled?.Invoke() ?? false);
         if (_stateMachine.Current.NodeConnectionIntended != enabled ||
             (!enabled && _stateMachine.Current.NodeState != RoleConnectionState.Disabled))
         {
@@ -2962,6 +3076,34 @@ public sealed class GatewayConnectionManager :
         }
 
         return enabled;
+    }
+
+    private void CancelManagedPreparation()
+    {
+        try { Volatile.Read(ref _managedPreparationCts)?.Cancel(); }
+        catch (ObjectDisposedException) { /* The preparation completed concurrently. */ }
+    }
+
+    private void SupersedeConnectionIntent()
+    {
+        CancellationTokenSource previous;
+        lock (_connectionIntentLock)
+            previous = AdvanceConnectionIntentUnderLock();
+        CancelRetiredConnectionIntent(previous);
+    }
+
+    private CancellationTokenSource AdvanceConnectionIntentUnderLock()
+    {
+        var previous = _connectionIntentCancellation;
+        _connectionIntentCancellation = new CancellationTokenSource();
+        _connectionIntentEpoch++;
+        return previous;
+    }
+
+    private static void CancelRetiredConnectionIntent(CancellationTokenSource previous)
+    {
+        try { previous.Cancel(); }
+        finally { previous.Dispose(); }
     }
 
     private bool IsCurrentGatewayAttempt(long expectedGeneration, string expectedGatewayId) =>
@@ -3103,6 +3245,8 @@ public sealed class GatewayConnectionManager :
     bool INodeLifecycleSource.ShouldStartNodeConnection(
         NodeConnectionTarget target)
     {
+        if (target.Record.ManagedRemote is not null)
+            return false;
         if (_shouldStartNodeConnection is not null)
             return _shouldStartNodeConnection(target.Record, target.IdentityPath);
         return _isNodeEnabled?.Invoke() ?? false;
@@ -3731,6 +3875,7 @@ public sealed class GatewayConnectionManager :
     {
         if (_disposed) return;
         _disposed = true;
+        SupersedeConnectionIntent();
         CancelOperatorTelemetryAttempt("disposed", ConnectionErrorCategory.Disposed);
         try { Volatile.Read(ref _manualSshRestartCts)?.Cancel(); }
         catch (ObjectDisposedException) { }

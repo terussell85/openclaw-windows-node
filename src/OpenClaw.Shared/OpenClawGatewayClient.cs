@@ -96,6 +96,10 @@ public partial class OpenClawGatewayClient : WebSocketClientBase, IOperatorGatew
     /// Headless and validation clients must not advertise an approval delivery route.
     /// </summary>
     public bool SupportsExecApprovals { get; init; }
+    /// <summary>Used only by a staged owner enrollment connection, before publication.</summary>
+    public IReadOnlyList<string>? RequestedOperatorScopes { get; init; }
+    public IReadOnlyList<string>? RequiredOperatorScopes { get; set; }
+    public bool SuppressInitialStateRequests { get; init; }
 
     internal IConnectEnvelopeSigner ConnectEnvelopeSigner
     {
@@ -2273,6 +2277,8 @@ public partial class OpenClawGatewayClient : WebSocketClientBase, IOperatorGatew
     {
         if (role == "node")
             return [];
+        if (RequestedOperatorScopes is { } requested)
+            return requested.ToArray();
 
         if (!HasUsableOperatorDeviceToken)
         {
@@ -2573,6 +2579,14 @@ public partial class OpenClawGatewayClient : WebSocketClientBase, IOperatorGatew
                 return;
             }
 
+            if (RequiredOperatorScopes is { } required &&
+                !required.All(scope => TryGetHandshakeScopes(payload).Contains(scope, StringComparer.Ordinal)))
+            {
+                _authFailed = true;
+                RaiseConnectionFailure(GatewayErrorKind.ScopeMismatch);
+                RaiseAuthenticationFailed("Required owner management scopes were not granted.");
+                return;
+            }
             _logger.Info($"[HANDSHAKE] Received hello-ok!");
             Volatile.Write(ref _pairingRequiredAwaitingApproval, false);
             Volatile.Write(ref _pairingRequiredRequestId, null);
@@ -2671,6 +2685,8 @@ public partial class OpenClawGatewayClient : WebSocketClientBase, IOperatorGatew
             RaiseStatusChanged(ConnectionStatus.Connected);
 
             // Request initial state after handshake
+            if (SuppressInitialStateRequests)
+                return;
             _ = Task.Run(async () =>
             {
                 await Task.Delay(500);

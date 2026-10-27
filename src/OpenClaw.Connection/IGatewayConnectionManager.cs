@@ -34,6 +34,15 @@ public interface IGatewayConnectionManager : IDisposable, IAsyncDisposable
     Task<bool> RestartSshTunnelAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(false);
     Task SwitchGatewayAsync(string gatewayId);
+    /// <summary>Capture cancellable authority before starting an asynchronous user action.</summary>
+    GatewayConnectionIntent? CaptureConnectionIntent() => null;
+    /// <summary>
+    /// Atomically admit a switch only while this manager's captured intent is current.
+    /// True means the switch was admitted; connection readiness remains in CurrentSnapshot.
+    /// </summary>
+    Task<bool> SwitchGatewayIfIntentCurrentAsync(
+        string gatewayId, GatewayConnectionIntent intent, CancellationToken cancellationToken = default) =>
+        Task.FromResult(false);
     void SetGatewayConnectionIntent(string gatewayId, bool shouldBeConnected);
     bool IsAutomaticReconnectAllowed(string gatewayId);
 

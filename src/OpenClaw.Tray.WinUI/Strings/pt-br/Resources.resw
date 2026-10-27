@@ -1,5 +1,32 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <root>
+  <data name="ConnectionPage_W365Managed.Text" xml:space="preserve"><value>W365 Managed</value></data>
+  <data name="ManagedRemote_Title.Text" xml:space="preserve"><value>Managed remote Claw</value></data>
+  <data name="ManagedRemote_Description.Text" xml:space="preserve"><value>Sign in with your work account to manage your assigned Claw. This connection never shares this PC as a node.</value></data>
+  <data name="ManagedRemote_Connect.Content" xml:space="preserve"><value>Sign in and connect</value></data>
+  <data name="ManagedRemote_SignOut.Content" xml:space="preserve"><value>Sign out</value></data>
+  <data name="ManagedRemote_SaveFile" xml:space="preserve"><value>Save attachment</value></data>
+  <data name="ManagedRemote_AllFiles" xml:space="preserve"><value>All files (*.*)</value></data>
+  <data name="ManagedRemote_State_Disabled" xml:space="preserve"><value>Managed connections are disabled.</value></data>
+  <data name="ManagedRemote_State_ServiceSetupRequired" xml:space="preserve"><value>Signed in. Configure a valid HTTPS service URL in settings, then restart Companion to connect.</value></data>
+  <data name="ManagedRemote_State_SetupRequired" xml:space="preserve"><value>Developer setup is required. Configure the approved authority, desktop client ID, API scope and HTTPS service URL in settings, then restart.</value></data>
+  <data name="ManagedRemote_State_SignInRequired" xml:space="preserve"><value>Sign in with the work account that owns your Claw.</value></data>
+  <data name="ManagedRemote_State_SigningIn" xml:space="preserve"><value>Complete sign-in in your system browser.</value></data>
+  <data name="ManagedRemote_State_Discovering" xml:space="preserve"><value>Finding your assigned Claw.</value></data>
+  <data name="ManagedRemote_State_NotAssigned" xml:space="preserve"><value>No Claw is assigned to this account. Contact your administrator. No machine was provisioned.</value></data>
+  <data name="ManagedRemote_State_Starting" xml:space="preserve"><value>Starting your existing Claw session. You can sign out to cancel waiting.</value></data>
+  <data name="ManagedRemote_State_Offline" xml:space="preserve"><value>The Claw is offline or disconnected. Check its status with your administrator, then connect again. No repair or reset was started.</value></data>
+  <data name="ManagedRemote_State_Enrolling" xml:space="preserve"><value>Preparing this app's operator identity for owner approval.</value></data>
+  <data name="ManagedRemote_State_Approving" xml:space="preserve"><value>Requesting approval for this exact device identity.</value></data>
+  <data name="ManagedRemote_State_Upgrading" xml:space="preserve"><value>Waiting for the owner-approved management grant.</value></data>
+  <data name="ManagedRemote_State_Connecting" xml:space="preserve"><value>Connecting to the Gateway with the approved management grant.</value></data>
+  <data name="ManagedRemote_State_Ready" xml:space="preserve"><value>Connected for owner management. This PC is not advertised as a node.</value></data>
+  <data name="ManagedRemote_State_StaleAssignment" xml:space="preserve"><value>Your assignment changed. Sign in and connect again to rediscover the current Claw.</value></data>
+  <data name="ManagedRemote_State_EnrollmentExpired" xml:space="preserve"><value>Enrollment expired or was interrupted. Sign in and connect to explicitly request a fresh enrollment using the same device identity.</value></data>
+  <data name="ManagedRemote_State_CompatibilityError" xml:space="preserve"><value>The service or Gateway does not support the required native enrollment contract. Ask your administrator to verify compatible versions.</value></data>
+  <data name="ManagedRemote_State_AccessDenied" xml:space="preserve"><value>This account or desktop client is not approved for the current assignment. Ask your administrator to verify access and consent.</value></data>
+  <data name="ManagedRemote_State_Unavailable" xml:space="preserve"><value>The managed service could not complete the request. Check connectivity and service configuration, then connect again.</value></data>
+  <data name="ManagedRemote_State_SignedOut" xml:space="preserve"><value>Signed out locally. Cached app tokens were removed. Your system browser may still have a work-account session.</value></data>
   <xsd:schema id="root" xmlns="" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:msdata="urn:schemas-microsoft-com:xml-msdata">
     <xsd:element name="root" msdata:IsDataSet="true">
       <xsd:complexType>

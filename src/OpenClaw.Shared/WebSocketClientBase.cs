@@ -149,6 +149,7 @@ public abstract class WebSocketClientBase : IDisposable
     public event EventHandler<ConnectionStatus>? StatusChanged;
     public event EventHandler<string>? AuthenticationFailed;
     public event EventHandler? Disposed;
+    public IGatewayTransportAuthentication? TransportAuthentication { get; set; }
     /// <summary>
     /// Optional fail-closed authorization invoked immediately before every client-owned reconnect.
     /// Managed-local callers use it to re-check endpoint provenance and explicit user intent.
@@ -301,6 +302,13 @@ public abstract class WebSocketClientBase : IDisposable
             connectCancellation.CancelAfter(connectTimeout);
             try
             {
+                if (TransportAuthentication is { } authentication)
+                {
+                    var headers = await authentication.GetHeadersAsync(uri, connectCancellation.Token)
+                        .ConfigureAwait(false);
+                    foreach (var header in headers)
+                        ws.Options.SetRequestHeader(header.Key, header.Value);
+                }
                 await ws.ConnectAsync(uri, connectCancellation.Token);
             }
             catch (OperationCanceledException ex) when (

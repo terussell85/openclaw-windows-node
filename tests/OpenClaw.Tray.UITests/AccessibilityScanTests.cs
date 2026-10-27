@@ -80,6 +80,33 @@ public sealed class AccessibilityScanTests
 
     [Fact]
     [Trait("Category", "Accessibility")]
+    public async Task W365ManagedAddGateway_PassesAccessibilityScan()
+    {
+        await _app.NavigateAsync("connection", "ConnectionPage", "ConnectionPageMarker");
+        var hub = AutomationElement.FromHandle(_app.HubWindowHandle);
+        var add = hub.FindFirst(TreeScope.Descendants,
+            new PropertyCondition(AutomationElement.AutomationIdProperty, "AddGatewayHeaderAction"));
+        if (add is null || add.Current.IsOffscreen)
+            add = hub.FindFirst(TreeScope.Descendants,
+                new PropertyCondition(AutomationElement.AutomationIdProperty, "LobbyDirectTile"));
+        Assert.NotNull(add);
+        ((InvokePattern)add.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+
+        var tab = await WaitForOnscreenLayoutAsync(hub, "AddManagedItem");
+        Assert.Equal("W365 Managed", tab.Current.Name);
+        if (tab.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var selection))
+            ((SelectionItemPattern)selection).Select();
+        else
+            ((InvokePattern)tab.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+
+        var connect = await WaitForOnscreenLayoutAsync(hub, "ManagedRemoteConnect");
+        Assert.False(connect.Current.IsEnabled);
+        AxeHelper.AssertNoAccessibilityErrors(
+            _app.HubWindowHandle, context: "W365 Managed add gateway");
+    }
+
+    [Fact]
+    [Trait("Category", "Accessibility")]
     public async Task ChatComposerControls_ExposeOnscreenLayoutThroughUia()
     {
         await _app.NavigateAsync(

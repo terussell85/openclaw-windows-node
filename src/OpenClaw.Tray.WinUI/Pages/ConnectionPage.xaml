@@ -4,7 +4,8 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:controls="using:Microsoft.UI.Xaml.Controls"
-    xmlns:helpers="using:OpenClawTray.Helpers">
+    xmlns:helpers="using:OpenClawTray.Helpers"
+    xmlns:appControls="using:OpenClawTray.Controls">
 
     <!--
         Resources declared FIRST so StaticResource lookups in the content
@@ -90,7 +91,6 @@
         <Grid HorizontalAlignment="Stretch">
             <StackPanel Padding="24" Spacing="8"
                         HorizontalAlignment="Stretch" MaxWidth="900">
-
             <!-- ═════════════════════════════════════════════════════════
                  PINNED MODIFIERS — render across every mode
                  ═════════════════════════════════════════════════════════ -->
@@ -971,11 +971,13 @@
                     <HyperlinkButton x:Name="AddBackButton"
                                      Padding="0" FontSize="13"
                                      Click="OnAddBack"
+                                     AutomationProperties.Name="{x:Bind AddBackLabel.Text, Mode=OneWay}"
                                      AutomationProperties.AutomationId="AddGatewayBack">
                         <StackPanel Orientation="Horizontal" Spacing="4">
                             <FontIcon Glyph="{x:Bind helpers:FluentIconCatalog.Back, Mode=OneTime}" FontSize="10" VerticalAlignment="Center"
                                       AutomationProperties.AccessibilityView="Raw"/>
-                            <TextBlock x:Uid="ConnectionPage_Back" Text="Back" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="AddBackLabel" x:Uid="ConnectionPage_Back"
+                                       Text="Back" VerticalAlignment="Center"/>
                         </StackPanel>
                     </HyperlinkButton>
 
@@ -993,11 +995,20 @@
                         <controls:SelectorBarItem x:Uid="ConnectionPage_SetupCode2" x:Name="AddSetupCodeItem"
                                                   Text="Setup code"
                                                   Tag="setup"/>
+                        <controls:SelectorBarItem x:Uid="ConnectionPage_W365Managed" x:Name="AddManagedItem"
+                                                  Text="W365 Managed"
+                                                  Tag="managed"
+                                                  AutomationProperties.AutomationId="AddManagedItem"/>
                         <controls:SelectorBarItem x:Uid="ConnectionPage_LocalWSL" x:Name="AddLocalWslItem"
                                                   Text="Local WSL"
                                                   Tag="local"
                                                   Visibility="Collapsed"/>
                     </controls:SelectorBar>
+
+                    <StackPanel x:Name="AddManagedPane" Visibility="Collapsed"
+                                AutomationProperties.AutomationId="AddManagedPane">
+                        <appControls:ManagedRemoteConnectionCard x:Name="ManagedRemoteCard" Visibility="Collapsed"/>
+                    </StackPanel>
 
                     <!-- Direct pane (default selected) -->
                     <StackPanel x:Name="AddDirectPane" Spacing="8">
@@ -1214,10 +1225,12 @@
                     </Expander>
 
                     <!-- Add result line -->
-                    <TextBlock x:Name="AddResultText"
-                               Style="{StaticResource CaptionTextBlockStyle}"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                               TextWrapping="Wrap"/>
+                    <StackPanel x:Name="AddManualResultPane">
+                        <TextBlock x:Name="AddResultText"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
 
                     <!-- Test / Save / Cancel row -->
                     <Grid ColumnSpacing="8">
@@ -1235,11 +1248,14 @@
                                 Content="Cancel"
                                 Click="OnAddBack"/>
                     </Grid>
-                    <TextBlock x:Name="AddTestResultText"
-                               Visibility="Collapsed"
-                               TextWrapping="Wrap"
-                               Margin="0,4,0,0"
-                               Style="{StaticResource CaptionTextBlockStyle}"/>
+                    <StackPanel x:Name="AddManualTestResultPane">
+                        <TextBlock x:Name="AddTestResultText"
+                                   Visibility="Collapsed"
+                                   TextWrapping="Wrap"
+                                   Margin="0,4,0,0"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   AutomationProperties.AutomationId="AddTestResult"/>
+                    </StackPanel>
                 </StackPanel>
             </Border>
 

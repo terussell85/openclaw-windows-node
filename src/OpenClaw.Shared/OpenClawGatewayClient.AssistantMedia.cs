@@ -92,7 +92,7 @@ public partial class OpenClawGatewayClient
                 && TryReadArtifactMetadata(payload, media.Kind, out _, out _)
                 && payload.TryGetProperty("url", out var urlElement)
                 && urlElement.ValueKind == JsonValueKind.String
-                && TryResolveManagedMediaUri(lease.HttpBaseUri, urlElement.GetString(), out var downloadUri)
+                && TryResolveAssistantMediaUri(lease.HttpBaseUri, urlElement.GetString(), out var downloadUri)
                     ? downloadUri
                     : null;
         }
@@ -163,7 +163,7 @@ public partial class OpenClawGatewayClient
 
         if (!payload.TryGetProperty("url", out var urlElement)
             || urlElement.ValueKind != JsonValueKind.String
-            || !TryResolveManagedMediaUri(lease.HttpBaseUri, urlElement.GetString(), out var mediaUri))
+            || !TryResolveAssistantMediaUri(lease.HttpBaseUri, urlElement.GetString(), out var mediaUri))
         {
             return AssistantMediaResolutionResult.Unavailable;
         }
@@ -191,7 +191,8 @@ public partial class OpenClawGatewayClient
             mediaTicket: null,
             metadata: true,
             playback: false);
-        using var metadataRequest = CreateAuthenticatedMediaRequest(metadataUri, "application/json");
+        using var metadataRequest = await CreateAuthenticatedMediaRequestAsync(metadataUri, "application/json", cancellationToken)
+            .ConfigureAwait(false);
         using var metadataResponse = await _assistantMediaHttpClient.SendAsync(
             metadataRequest,
             HttpCompletionOption.ResponseHeadersRead,
@@ -249,7 +250,8 @@ public partial class OpenClawGatewayClient
         int maximumBytes,
         CancellationToken cancellationToken)
     {
-        using var request = CreateAuthenticatedMediaRequest(uri, $"{MimePrefix(kind)}/*");
+        using var request = await CreateAuthenticatedMediaRequestAsync(uri, $"{MimePrefix(kind)}/*", cancellationToken)
+            .ConfigureAwait(false);
         using var response = await _assistantMediaHttpClient.SendAsync(
             request,
             HttpCompletionOption.ResponseHeadersRead,
@@ -279,11 +281,24 @@ public partial class OpenClawGatewayClient
             : AssistantMediaResolutionResult.Unavailable;
     }
 
-    private HttpRequestMessage CreateAuthenticatedMediaRequest(Uri uri, string accept)
+    private async Task<HttpRequestMessage> CreateAuthenticatedMediaRequestAsync(
+        Uri uri, string accept, CancellationToken ct)
     {
         var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(accept));
         var authToken = Volatile.Read(ref _assistantMediaAuthToken);
+        if (TransportAuthentication is { } transport)
+        {
+            try
+            {
+                foreach (var header in await transport.GetHeadersAsync(uri, ct).ConfigureAwait(false))
+                    request.Headers.Add(header.Key, header.Value);
+                if (!string.IsNullOrWhiteSpace(authToken))
+                    request.Headers.Add("X-Claw-Gateway-Token", authToken);
+                return request;
+            }
+            catch { request.Dispose(); throw; }
+        }
         if (!string.IsNullOrWhiteSpace(authToken))
             request.Headers.Authorization = new AuthenticationHeaderValue(
                 "Bearer",
@@ -294,7 +309,10 @@ public partial class OpenClawGatewayClient
     private bool TryCaptureMediaLease(out GatewayConnectionLease lease)
     {
         lease = default;
-        if (!IsConnectedToGateway || !TryBuildMediaHttpBaseUri(_currentGatewayUrl, out var baseUri))
+        if (!IsConnectedToGateway)
+            return false;
+        var baseUri = TransportAuthentication?.HttpBaseUri;
+        if (baseUri is null && !TryBuildMediaHttpBaseUri(_currentGatewayUrl, out baseUri))
             return false;
         lease = new GatewayConnectionLease(_mediaClientId, ConnectionGeneration, baseUri);
         return true;
@@ -353,6 +371,101 @@ public partial class OpenClawGatewayClient
 
         mediaUri = candidate;
         return true;
+    }
+
+    private bool TryResolveAssistantMediaUri(Uri baseUri, string? path, out Uri mediaUri)
+    {
+        if (TransportAuthentication is not null &&
+            path?.StartsWith(ManagedMediaPathPrefix.TrimStart('/'), StringComparison.Ordinal) == true)
+            path = "/" + path;
+        if (!TryResolveManagedMediaUri(baseUri, path, out mediaUri))
+            return false;
+        if (TransportAuthentication is null)
+            return true;
+        var decoded = path!.Split('?', 2)[0];
+        for (var i = 0; i < 3; i++)
+        {
+            if (decoded.Contains('\\') || HasTraversal(decoded))
+                return false;
+            var next = Uri.UnescapeDataString(decoded);
+            if (next == decoded)
+            {
+                mediaUri = new UriBuilder(baseUri)
+                {
+                    Path = baseUri.AbsolutePath.TrimEnd('/') + mediaUri.AbsolutePath,
+                    Query = mediaUri.Query.TrimStart('?'),
+                }.Uri;
+                return true;
+            }
+            decoded = next;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Authenticated managed save. The scoped ticket stays private, redirects are disabled,
+    /// and an incomplete transfer never replaces the user's chosen destination.
+    /// </summary>
+    internal async Task<AssistantFileDownloadStatus> SaveManagedAssistantFileAsync(
+        string sessionKey, ChatMediaContentInfo media,
+        Func<CancellationToken, Task<string?>> selectDestination, CancellationToken ct)
+    {
+        if (TransportAuthentication is null || !TryCaptureMediaLease(out var lease))
+            return AssistantFileDownloadStatus.Unavailable;
+        string? staging = null;
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, CancellationToken);
+        linked.CancelAfter(TimeSpan.FromMinutes(5));
+        try
+        {
+            var uri = await ResolveAssistantFileDownloadUriAsync(sessionKey, media, linked.Token).ConfigureAwait(false);
+            if (uri is null || !IsCurrentMediaLease(lease))
+                return AssistantFileDownloadStatus.Unavailable;
+            var path = await selectDestination(linked.Token).ConfigureAwait(false);
+            if (path is null) return AssistantFileDownloadStatus.Unavailable;
+            linked.Token.ThrowIfCancellationRequested();
+            staging = path + "." + Guid.NewGuid().ToString("N") + ".download";
+            using var request = await CreateAuthenticatedMediaRequestAsync(uri, "*/*", linked.Token).ConfigureAwait(false);
+            using var response = await _assistantMediaHttpClient.SendAsync(request,
+                HttpCompletionOption.ResponseHeadersRead, linked.Token).ConfigureAwait(false);
+            const long maximumFileBytes = 1024L * 1024 * 1024;
+            if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > maximumFileBytes)
+                return AssistantFileDownloadStatus.Failed;
+            await using (var output = new FileStream(staging, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                await using var input = await response.Content.ReadAsStreamAsync(linked.Token).ConfigureAwait(false);
+                var buffer = new byte[64 * 1024];
+                long written = 0;
+                int count;
+                while ((count = await input.ReadAsync(buffer, linked.Token).ConfigureAwait(false)) > 0)
+                {
+                    written += count;
+                    if (written > maximumFileBytes) return AssistantFileDownloadStatus.Failed;
+                    await output.WriteAsync(buffer.AsMemory(0, count), linked.Token).ConfigureAwait(false);
+                }
+                await output.FlushAsync(linked.Token).ConfigureAwait(false);
+            }
+            linked.Token.ThrowIfCancellationRequested();
+            if (!IsCurrentMediaLease(lease)) return AssistantFileDownloadStatus.Unavailable;
+            File.Move(staging, path, overwrite: true);
+            return AssistantFileDownloadStatus.Started;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            _logger.Warn($"Managed file save failed ({ex.GetType().Name}).");
+            return AssistantFileDownloadStatus.Failed;
+        }
+        finally
+        {
+            try
+            {
+                if (staging is not null && File.Exists(staging))
+                    File.Delete(staging);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _logger.Warn($"Managed file save cleanup failed ({ex.GetType().Name}).");
+            }
+        }
     }
 
     private static Uri BuildLegacyMediaUri(

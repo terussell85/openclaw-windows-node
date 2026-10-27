@@ -1,5 +1,157 @@
 # Connection Architecture
 
+## Managed remote connections
+
+The optional managed provider connects the human owner to an assigned remote
+Gateway. It is a focused source integration, not a runtime plugin SDK.
+`GatewayConnectionManager`, `GatewayRegistry` and `SettingsManager` remain the
+published connection, identity catalog and settings owners. App only composes
+the provider, service and lifecycle hooks. **Connection > Add a gateway >
+W365 Managed** hosts the sign-in card, which observes
+`ManagedRemoteConnectionService` and forwards sign-in intent. It is not
+a pinned card outside the add flow. Missing provider configuration displays
+setup guidance with unavailable actions disabled, rather than an empty tab.
+The add pane offers only sign-in, not sign-out. Incomplete Entra identity
+configuration disables sign-in. Service configuration is checked after Entra
+authentication succeeds: an invalid service origin produces a signed-in,
+service-setup-required state without switching gateways or sending an API token.
+An HTTP service origin is not accepted even for localhost.
+
+### Configure a development profile
+
+Use a dedicated `OPENCLAW_TRAY_DATA_DIR`, not your ordinary Companion profile.
+Set the following non-secret section in that profile's `settings.json`, replacing
+each placeholder with values supplied by the authorized identity/service owner:
+
+```json
+{
+  "ManagedRemote": {
+    "Enabled": true,
+    "Authority": "https://login.microsoftonline.com/<approved-tenant-id>",
+    "ClientId": "<approved-public-desktop-client-id>",
+    "ApiScope": "<approved-delegated-api-scope>",
+    "ServiceBaseUrl": "https://<approved-service-origin>/"
+  }
+}
+```
+
+The service URL is an HTTPS origin, without a path, query, user information or
+fragment. The authority must select the approved work-account tenant. The native
+registration must permit the MSAL public-client system-browser flow with
+`http://localhost`; MSAL owns the ephemeral listener, authorization code and PKCE.
+There is no client secret, password grant, Agent User sign-in, app-only token or
+production fixture-authentication switch.
+
+Restart Companion after editing developer configuration. Open **Connection**
+from the Workspace Owner menu's Settings companion, choose **Add a gateway >
+W365 Managed**, then **Sign in and connect**. Incomplete configuration produces
+Setup required. With the section absent or disabled, the tab remains available
+with setup guidance; it does not enable managed connections or change ordinary profiles.
+Managed startup uses silent authentication only. Browser interaction always
+requires the explicit sign-in action.
+
+`MsalManagedIdentity` uses MSAL's account/token cache for silent renewal.
+Interactive sign-in retains the explicitly selected home-account ID. Silent
+requests select only that exact account, including after restarting Companion;
+they do not choose the first account or require the cache to contain only one.
+If the selected account is absent, sign-in is required even when another
+account is still cached. The account ID and MSAL cache share one versioned DPAPI
+envelope and atomic replacement. Older raw MSAL caches retain their account data,
+but require one explicit sign-in to establish the missing selection.
+`ProtectedMsalCache` persists only current-user DPAPI ciphertext under
+`managed-identity` in the selected Companion data directory, using atomic
+replacement, restricted sensitive-file ACLs and a concurrent-writer check.
+Human tokens never enter `gateways.json`, URLs, settings or diagnostics.
+Sign out first cancels managed admission/enrollment, disconnects a current
+managed client and removes MSAL accounts and the selected home-account ID from
+this app's cache. It does not clear unrelated profiles, signing keys or the
+system browser's account session.
+An unavailable cache-removal operation remains a failure, not confirmed sign-out.
+
+### Discovery, startup and owner enrollment
+
+`ManagedGatewayProvider` reads `GET /api/native/connection`. It never provisions
+a machine. Activation required reuses the existing bodyless authenticated
+`POST /api/control/activations` and `GET resourceUrl` contract with exact
+`Starting`, `Ready` and `Failed` states. Discovery starting is polled; offline,
+not assigned, setup, consent, stale assignment and compatibility failures remain
+distinct actionable states. No automatic repair, reset or reprovision occurs.
+Startup and enrollment each have a three-minute bound, in addition to caller
+cancellation and service deadlines.
+
+Each service/configuration/Claw/assignment binding has a stable registry ID and
+canonical per-Gateway device identity. A changed assignment gets a different
+identity and cannot inherit the previous assignment's device credential.
+Each HTTP/WS handoff silently renews human admission and rechecks the discovered
+binding. The BFF still authorizes current ownership on every forwarded request.
+
+The pinned Gateway 2026.9.4 operator enrollment sequence is:
+
+1. Send this identity's exact ID/public key to the owner-authorized enrollment
+   endpoint. Keep the returned limited setup code only in memory.
+2. Connect with the existing `cli`/`cli` Windows metadata, signed persistent
+   identity, operator role and only `operator.read`.
+3. Approve only the Gateway's exact initial pairing request through the BFF,
+   then reconnect with the same identity. A pre-existing exact-key read-only
+   grant can proceed without manufacturing an initial request.
+4. Request the final scope set through `device.scopes.requestUpgrade`, begin
+   `device.scopes.waitUpgrade` and request exact admin-stage approval through
+   the BFF.
+5. Accept the rotated token only from that identity-bound wait response, persist
+   it and its scopes through `DeviceIdentity`, then let the normal manager
+   create the published connection.
+
+The final grant includes `operator.admin`, `operator.pairing`, `operator.read`,
+`operator.write`, `operator.approvals`, `operator.questions` and
+`operator.talk.secrets`. The published client's hello must retain every required
+scope before handshake readiness or credential persistence. Staged enrollment
+clients do not publish management UI or request ordinary application state.
+An interrupted/expired attempt cannot mint setup credentials repeatedly during
+background reconnect. **Sign in and connect** explicitly authorizes a fresh
+attempt using the same assignment identity.
+An exact device-token-mismatch failure requires that same explicit fresh
+enrollment action. Only the rejected operator credential is cleared for that
+action; the signing key, unrelated role credentials and other profiles remain.
+User Disconnect or a gateway switch cancels managed preparation before waiting
+for the manager transition gate, rather than waiting out startup/enrollment.
+The same canonical intent fence spans browser authentication through connection
+commit. `GatewayConnectionManager.CaptureConnectionIntent` returns an owned,
+single-use epoch/cancellation lease. A newer connection, disconnect, switch or
+explicit intent change invalidates it, even if the active Gateway ID is unchanged
+or the user switches away and back. After authentication, the managed service
+uses `SwitchGatewayIfIntentCurrentAsync`, which rechecks and consumes that lease
+under the manager's transition gate before selecting or connecting a Gateway.
+The service never reasserts a profile using only an active-ID comparison.
+
+Managed profiles block automatic, explicit node-only and callback-enabled node
+connection paths even when another profile's global Node mode preference is on.
+They never change that preference or impersonate iOS/Control UI.
+
+### Supporting HTTP and downloads
+
+Managed WS and HTTPS requests carry the human bearer plus `X-Claw-Id` and
+`X-Claw-Assignment-Version`. Gateway HTTP credentials use the separate sensitive
+`X-Claw-Gateway-Token` header. Native signed Gateway protocol content remains
+unchanged. No credential is added to a URL. Redirect following is disabled.
+
+Assistant resource URLs, including root-relative ticketed artifacts, resolve
+under the discovered Gateway `httpBaseUrl`; they cannot escape its API prefix.
+The scoped upstream `mediaTicket` remains private to the existing connection
+owner and is distinct from either bearer. Managed file attachments use an
+authenticated native Save dialog and bounded streaming transfer (1 GiB maximum,
+five-minute deadline), with a sibling staging file and replacement only after
+successful current-connection completion. They do not launch a browser that
+cannot carry human admission. Existing unmanaged browser-download and media
+URI behavior is unchanged.
+
+Local Connection/Shared tests inject isolated identity/HTTP adapters and a
+loopback Gateway protocol fixture. They establish contracts, stable identity,
+exact approvals, grant readiness, routing and protected cache behavior, not
+real Entra consent, deployed BFF/ARI/device compatibility or visible WinUI proof.
+Those require approved identity configuration and a separately verified native
+Windows build/runtime. All new resource keys exist in every supported locale;
+non-English managed copy is explicitly deferred English pending locale review.
+
 ## Native Local AI ownership and configuration
 
 Native Local AI configuration uses authenticated Gateway RPC, not CLI batch
@@ -531,6 +683,8 @@ ConnectAsync(gatewayId?)          // connect to active or specified gateway
 DisconnectAsync()                 // tear down all connections
 ReconnectAsync()                  // disconnect + connect
 SwitchGatewayAsync(gatewayId)     // switch to different gateway (stops tunnel, resets state)
+CaptureConnectionIntent()        // lease for an async action that must respect newer user intent
+SwitchGatewayIfIntentCurrentAsync(gatewayId, intent, ct) // atomic, single-use conditional switch
 ApplySetupCodeAsync(setupCode)    // decode QR/setup code → register → connect
 
 // State

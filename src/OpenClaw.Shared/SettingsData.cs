@@ -15,6 +15,7 @@ public record class SettingsData
     public int SettingsSchemaVersion { get; set; } = 1;
 
     public string? GatewayUrl { get; set; }
+    public ManagedRemoteOptions? ManagedRemote { get; set; }
     public bool UseSshTunnel { get; set; } = false;
     public string? SshTunnelUser { get; set; }
     public string? SshTunnelHost { get; set; }

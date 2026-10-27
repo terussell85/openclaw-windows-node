@@ -1,0 +1,19 @@
+<UserControl
+    x:Class="OpenClawTray.Controls.ManagedRemoteConnectionCard"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1" CornerRadius="8" Padding="16">
+        <StackPanel Spacing="8">
+            <TextBlock x:Uid="ManagedRemote_Title" Style="{StaticResource BodyStrongTextBlockStyle}"/>
+            <TextBlock x:Uid="ManagedRemote_Description" TextWrapping="Wrap"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <TextBlock x:Name="StatusText" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+            <Button x:Name="ConnectButton" x:Uid="ManagedRemote_Connect"
+                    Click="OnConnect" Style="{StaticResource AccentButtonStyle}"
+                    HorizontalAlignment="Left"
+                    AutomationProperties.AutomationId="ManagedRemoteConnect"/>
+        </StackPanel>
+    </Border>
+</UserControl>

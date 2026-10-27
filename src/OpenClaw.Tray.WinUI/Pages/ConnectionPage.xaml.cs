@@ -116,6 +116,7 @@ public sealed partial class ConnectionPage : Page
         _connectionManager = CurrentApp.ConnectionManager;
         _gatewayDirectConnectService = CurrentApp.GatewayDirectConnectService;
         _gatewayRegistry = CurrentApp.Registry;
+        ManagedRemoteCard.Initialize(CurrentApp.ManagedRemoteConnection);
         var settings = CurrentApp.Settings;
         if (settings == null) return;
 
@@ -1987,17 +1988,20 @@ public sealed partial class ConnectionPage : Page
     {
         AddDirectPane.Visibility = (tag == "direct") ? Visibility.Visible : Visibility.Collapsed;
         AddSetupCodePane.Visibility = (tag == "setup") ? Visibility.Visible : Visibility.Collapsed;
+        AddManagedPane.Visibility = (tag == "managed") ? Visibility.Visible : Visibility.Collapsed;
         AddLocalWslPane.Visibility = (tag == "local") ? Visibility.Visible : Visibility.Collapsed;
         // Scan pane is dead code now (kept for back-compat); always hidden.
         AddScanPane.Visibility = Visibility.Collapsed;
 
         // SSH tunnel + Save/Cancel row only apply to Direct and Setup-code
-        // methods. The Local-WSL pane drives the install via its own
-        // button and doesn't need a per-gateway form to submit.
+        // methods. Managed sign-in and Local-WSL setup have their own actions.
         bool isFormMethod = (tag == "direct") || (tag == "setup");
         AddSshExpander.Visibility = isFormMethod ? Visibility.Visible : Visibility.Collapsed;
         AddSaveButton.Visibility = isFormMethod ? Visibility.Visible : Visibility.Collapsed;
         AddRemoteHelpLink.Visibility = isFormMethod ? Visibility.Visible : Visibility.Collapsed;
+        AddSecurityAdviceBar.Visibility = isFormMethod ? Visibility.Visible : Visibility.Collapsed;
+        AddManualResultPane.Visibility = tag == "managed" ? Visibility.Collapsed : Visibility.Visible;
+        AddManualTestResultPane.Visibility = tag == "managed" ? Visibility.Collapsed : Visibility.Visible;
         if (!isFormMethod)
             AddRemoteHelpTip.IsOpen = false;
 

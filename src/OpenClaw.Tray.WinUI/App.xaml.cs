@@ -48,6 +48,8 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands, IPer
     internal InteractiveGatewayEndpointAuthorizer? InteractiveEndpointAuthorizer { get; private set; }
     private GatewayDirectConnectService? _gatewayDirectConnectService;
     private GatewayRegistry? _gatewayRegistry;
+    private ManagedRemoteConnectionService? _managedRemoteConnection;
+    public ManagedRemoteConnectionService? ManagedRemoteConnection => _managedRemoteConnection;
     private OpenClawTray.Services.ManagedLocalGatewayAutoRepairMonitor? _managedLocalAutoRepairMonitor;
     private ManagedLocalGatewayPortProvenanceService? _managedLocalPortProvenance;
     private OpenClawTray.Chat.OpenClawChatCoordinator? _chatCoordinator;
@@ -831,6 +833,10 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands, IPer
         // Initialize connection manager before setup flow.
         var credentialResolver = new CredentialResolver(DeviceIdentityFileReader.Instance);
         var clientFactory = new GatewayClientFactory { SupportsExecApprovals = true };
+        var managedProvider = _settings.ManagedRemote is { Enabled: true }
+            ? new ManagedGatewayProvider(_gatewayRegistry,
+                new MsalManagedIdentity(SettingsManager.SettingsDirectoryPath))
+            : null;
         var diagnostics = new ConnectionDiagnostics();
         var nodeConnector = new NodeConnector(appLogger, diagnostics);
         // Bridge: whenever NodeConnector creates a fresh WindowsNodeClient (initial
@@ -907,7 +913,14 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands, IPer
             tunnelManager: _sshTunnelService,
             endpointProvenanceProbe: managedLocalPortProvenance.InspectAsync,
             validationTunnelFactory: () => new SshTunnelService(appLogger),
-            nativeGatewayRuntime: nativeGatewayRuntime);
+            nativeGatewayRuntime: nativeGatewayRuntime,
+            managedGatewayProvider: managedProvider);
+        if (_settings.ManagedRemote is { Enabled: true } managedOptions)
+        {
+            _managedRemoteConnection = new ManagedRemoteConnectionService(
+                managedProvider!, _connectionManager, _gatewayRegistry, managedOptions);
+            _managedRemoteConnection.Initialize();
+        }
         _connectionManager.OperatorClientChanged += OnOperatorClientChanged;
         _connectionManager.StateChanged += OnManagerStateChanged;
         _localAiGatewayLifecycle.Attach(_connectionManager, _localAiRuntime);
@@ -1954,6 +1967,12 @@ public partial class App : Application, OpenClawTray.Services.IAppCommands, IPer
         if (_connectionManager == null || _gatewayRegistry == null)
             return false;
 
+        if (record.ManagedRemote is not null)
+        {
+            ObserveBackgroundFault(_connectionManager.ConnectAsync(record.Id),
+                "[App] Managed gateway startup connection failed");
+            return true;
+        }
         record = SyncGatewayBrowserProxyForward(record);
         var resolver = new CredentialResolver(DeviceIdentityFileReader.Instance);
         var identityDir = _gatewayRegistry.GetIdentityDirectory(record.Id);

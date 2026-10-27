@@ -106,6 +106,12 @@ public partial class App
             }));
         }
 
+        steps.Add(new AppShutdownStep("managed remote connection", () =>
+        {
+            _managedRemoteConnection?.Dispose();
+            _managedRemoteConnection = null;
+            return ValueTask.CompletedTask;
+        }));
         var connectionManager = _connectionManager;
         if (connectionManager is not null)
         {

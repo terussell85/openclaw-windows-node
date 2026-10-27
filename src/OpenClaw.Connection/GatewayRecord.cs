@@ -14,6 +14,7 @@ public sealed record GatewayRecord
 
     /// <summary>User-facing label (e.g. "Home Gateway").</summary>
     public string? FriendlyName { get; init; }
+    public ManagedRemoteProfile? ManagedRemote { get; init; }
 
     /// <summary>Long-lived shared token for any device.</summary>
     public string? SharedGatewayToken { get; init; }
@@ -88,6 +89,15 @@ public static class GatewayRecordEditing
             return rebuilt;
 
         var result = rebuilt with { BrowserControlPort = rebuilt.BrowserControlPort ?? existing.BrowserControlPort };
+        if (existing.ManagedRemote is not null)
+        {
+            // A URL edit must not inherit a human token admission realm or assignment.
+            return result with
+            {
+                ManagedRemote = rebuilt.Url == existing.Url && rebuilt.SshTunnel is null
+                    ? existing.ManagedRemote : null,
+            };
+        }
 
         if (existing.NativePackageFamilyName is not null)
         {

@@ -9,6 +9,141 @@ namespace OpenClaw.Shared.Tests;
 
 public sealed class OpenClawGatewayClientAssistantMediaTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RequiredOwnerGrantIsVerifiedBeforeHandshakeReadinessOrCredentialPersistence(bool fullGrant)
+    {
+        using var server = new LoopbackWebSocketServer();
+        using var data = new TempDirectory("managed-grant-");
+        await server.StartAsync();
+        string[] required =
+        [
+            "operator.admin", "operator.pairing", "operator.read", "operator.write",
+            "operator.approvals", "operator.questions", "operator.talk.secrets",
+        ];
+        using var client = new OpenClawGatewayClient(server.WebSocketUrl, "fixture-device", identityPath: data.Path)
+        {
+            RequiredOperatorScopes = required,
+            SuppressInitialStateRequests = true,
+        };
+        var outcome = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        client.HandshakeSucceeded += (_, _) => outcome.TrySetResult(true);
+        client.AuthenticationFailed += (_, _) => outcome.TrySetResult(false);
+        await client.ConnectAsync();
+        await server.SendTextAsync(JsonSerializer.Serialize(new
+        {
+            type = "event", @event = "connect.challenge",
+            payload = new { nonce = "required-grant-fixture", ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() },
+        }));
+        using var request = JsonDocument.Parse(await server.ReceiveTextAsync().WaitAsync(TimeSpan.FromSeconds(3)));
+        await server.SendTextAsync(JsonSerializer.Serialize(new
+        {
+            type = "res", id = request.RootElement.GetProperty("id").GetString(), ok = true,
+            payload = new
+            {
+                type = "hello-ok", protocol = 4,
+                auth = new { role = "operator", deviceToken = "new-owner-token",
+                    scopes = fullGrant ? required : ["operator.read"] },
+            },
+        }));
+        Assert.Equal(fullGrant, await outcome.Task.WaitAsync(TimeSpan.FromSeconds(3)));
+        Assert.Equal(fullGrant, client.HasHandshakeSnapshot);
+        var identity = new DeviceIdentity(data.Path);
+        identity.LoadExisting();
+        Assert.Equal(fullGrant ? "new-owner-token" : null, identity.DeviceToken);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task ManagedResourcesKeepApiPrefixAndSeparateHumanAndGatewayCredentials(bool file, bool redirect)
+    {
+        using var server = new LoopbackWebSocketServer();
+        using var data = new TempDirectory("managed-media-");
+        await server.StartAsync();
+        var handler = new ManagedMediaHandler { Redirect = redirect };
+        using var client = new OpenClawGatewayClient(server.WebSocketUrl, "gateway-device",
+            identityPath: data.Path, assistantMediaAuthToken: "gateway-device", assistantMediaHandler: handler)
+        {
+            TransportAuthentication = new ManagedMediaAuthentication(),
+        };
+        await client.ConnectAsync();
+        MarkHandshakeReady(client);
+        var media = new ChatMediaContentInfo
+        {
+            Kind = file ? ChatMediaContentKind.File : ChatMediaContentKind.Image,
+            Source = ChatMediaContentSource.Structured, ArtifactId = "fixture-artifact",
+        };
+        var destination = data.Combine("saved.zip");
+        if (file) File.WriteAllBytes(destination, [9, 8, 7]);
+        var save = file ? client.SaveManagedAssistantFileAsync("agent:main:main", media,
+            _ => Task.FromResult<string?>(destination), default) : null;
+        var resolution = file ? null : client.ResolveAssistantMediaAsync("agent:main:main", media);
+        var raw = await server.ReceiveTextAsync().WaitAsync(TimeSpan.FromSeconds(3));
+        using var request = JsonDocument.Parse(raw);
+        await server.SendTextAsync(JsonSerializer.Serialize(new
+        {
+            type = "res", id = request.RootElement.GetProperty("id").GetString(), ok = true,
+            payload = new
+            {
+                artifact = new { type = file ? "file" : "image", mimeType = file ? "application/zip" : "image/png", sizeBytes = 4 },
+                url = "/api/chat/media/outgoing/fixture/full?mediaTicket=private-scoped-ticket",
+            },
+        }));
+        if (file)
+        {
+            Assert.Equal(redirect ? AssistantFileDownloadStatus.Failed : AssistantFileDownloadStatus.Started,
+                await save!.WaitAsync(TimeSpan.FromSeconds(3)));
+            Assert.Equal(redirect ? new byte[] { 9, 8, 7 } : [1, 2, 3, 4], File.ReadAllBytes(destination));
+            Assert.Empty(Directory.GetFiles(data.Path, "*.download"));
+        }
+        else
+        {
+            Assert.Equal(AssistantMediaResolutionStatus.Ready,
+                (await resolution!.WaitAsync(TimeSpan.FromSeconds(3))).Status);
+        }
+        Assert.Equal("/api/native/gateway/api/chat/media/outgoing/fixture/full", handler.Uri!.AbsolutePath);
+        Assert.Equal("?mediaTicket=private-scoped-ticket", handler.Uri.Query);
+        Assert.Equal("Bearer human-renewed", handler.Headers!["Authorization"]);
+        Assert.Equal("gateway-device", handler.Headers["X-Claw-Gateway-Token"]);
+        Assert.Equal("fixture-claw", handler.Headers["X-Claw-Id"]);
+        Assert.Equal("fixture-generation", handler.Headers["X-Claw-Assignment-Version"]);
+    }
+
+    private sealed class ManagedMediaAuthentication : IGatewayTransportAuthentication
+    {
+        public Uri HttpBaseUri => new("https://service.example/api/native/gateway");
+        public Task<IReadOnlyDictionary<string, string>> GetHeadersAsync(Uri target, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyDictionary<string, string>>(new Dictionary<string, string>
+            {
+                ["Authorization"] = "Bearer human-renewed",
+                ["X-Claw-Id"] = "fixture-claw",
+                ["X-Claw-Assignment-Version"] = "fixture-generation",
+            });
+    }
+
+    private sealed class ManagedMediaHandler : HttpMessageHandler
+    {
+        public Uri? Uri;
+        public Dictionary<string, string>? Headers;
+        public bool Redirect;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Uri = request.RequestUri;
+            Headers = request.Headers.ToDictionary(h => h.Key, h => h.Value.Single(), StringComparer.OrdinalIgnoreCase);
+            if (Redirect)
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.Found);
+                response.Headers.Location = new Uri("https://untrusted.example/download");
+                return Task.FromResult(response);
+            }
+            return Task.FromResult(BytesResponse([1, 2, 3, 4], request.Headers.Accept.Single().MediaType == "*/*"
+                ? "application/zip" : "image/png"));
+        }
+    }
+
     [Fact]
     public async Task ResolveStructuredMedia_InlineBase64_ReturnsBoundedTypedBytes()
     {

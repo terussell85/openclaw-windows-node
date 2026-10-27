@@ -1,7 +1,42 @@
+using System.Xml.Linq;
+
 namespace OpenClaw.Tray.Tests;
 
 public sealed class ConnectionRegressionSourceTests
 {
+    [Fact]
+    public void W365ManagedAdd_OffersOnlySignIn_AndDisablesIncompleteSetup()
+    {
+        var card = XDocument.Parse(ReadSource(
+            "src", "OpenClaw.Tray.WinUI", "Controls", "ManagedRemoteConnectionCard.xaml"));
+        var button = Assert.Single(card.Descendants(), element => element.Name.LocalName == "Button");
+        Assert.Equal("OnConnect", (string?)button.Attribute("Click"));
+        var source = ReadSource(
+            "src", "OpenClaw.Tray.WinUI", "Controls", "ManagedRemoteConnectionCard.xaml.cs");
+        Assert.Contains("_service?.CanSignIn == true", source);
+        Assert.DoesNotContain("ManagedConnectionState.SetupRequired or", source);
+        Assert.DoesNotContain("OnSignOut", source);
+    }
+
+    [Fact]
+    public void W365Managed_IsAnAddGatewayMethod_NotAPinnedConnectionCard()
+    {
+        var page = XDocument.Parse(ReadSource(
+            "src", "OpenClaw.Tray.WinUI", "Pages", "ConnectionPage.xaml"));
+        XNamespace xaml = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var item = Assert.Single(page.Descendants(), element =>
+            element.Name.LocalName == "SelectorBarItem" && (string?)element.Attribute("Tag") == "managed");
+        Assert.Equal("W365 Managed", (string?)item.Attribute("Text"));
+        var card = Assert.Single(page.Descendants(), element =>
+            element.Name.LocalName == "ManagedRemoteConnectionCard");
+        Assert.Equal("AddManagedPane", (string?)card.Parent?.Attribute(xaml + "Name"));
+        Assert.Contains(card.Ancestors(), element =>
+            (string?)element.Attribute(xaml + "Name") == "AddGatewayPanel");
+        var connectivityResult = Assert.Single(page.Descendants(), element =>
+            (string?)element.Attribute(xaml + "Name") == "AddTestResultText");
+        Assert.Equal("AddManualTestResultPane", (string?)connectivityResult.Parent?.Attribute(xaml + "Name"));
+    }
+
     [Fact]
     public void Dashboard_TokenQuery_IsLimitedToSharedGatewayToken()
     {

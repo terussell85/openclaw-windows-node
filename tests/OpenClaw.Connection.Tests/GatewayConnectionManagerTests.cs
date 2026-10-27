@@ -13,6 +13,77 @@ namespace OpenClaw.Connection.Tests;
 public class GatewayConnectionManagerTests : IDisposable
 {
     [Fact]
+    public async Task UserDisconnectCancelsManagedPreparationBeforeWaitingForTransitionGate()
+    {
+        var record = new GatewayRecord
+        {
+            Id = "managed", Url = "wss://service.example/api/native/gateway",
+            ManagedRemote = new ManagedRemoteProfile(ManagedRemoteConnectionTests.Options),
+        };
+        _registry.AddOrUpdate(record);
+        _registry.SetActive(record.Id);
+        var provider = new BlockingManagedProvider();
+        using var manager = new GatewayConnectionManager(_resolver, _factory, _registry, NullLogger.Instance,
+            managedGatewayProvider: provider);
+        var connect = manager.ConnectAsync(record.Id);
+        await provider.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await manager.DisconnectByUserAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => connect);
+        Assert.Empty(_factory.CreatedClients);
+        Assert.Null(manager.OperatorClient);
+    }
+
+    private sealed class BlockingManagedProvider : IManagedGatewayProvider
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task<GatewayRecord> PrepareAsync(GatewayRecord record, CancellationToken ct)
+        {
+            Entered.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            return record;
+        }
+        public IGatewayTransportAuthentication CreateAuthentication(GatewayRecord record) => throw new NotImplementedException();
+    }
+
+    [Fact]
+    public async Task ManagedRemoteProfileNeverStartsNodeEvenWhenGlobalPreferenceAndCallbackAllowIt()
+    {
+        var record = new GatewayRecord
+        {
+            Id = "managed",
+            Url = "wss://service.example/api/native/gateway",
+            ManagedRemote = new ManagedRemoteProfile(ManagedRemoteConnectionTests.Options),
+        };
+        _registry.AddOrUpdate(record);
+        _registry.SetActive(record.Id);
+        _resolver.OperatorCredential = new("operator-device", false, CredentialResolver.SourceDeviceToken);
+        _resolver.NodeCredential = new("node-device", false, CredentialResolver.SourceNodeDeviceToken);
+        var node = new CountingNodeConnector();
+        using var manager = new GatewayConnectionManager(_resolver, _factory, _registry, NullLogger.Instance,
+            nodeConnector: node, isNodeEnabled: () => true,
+            shouldStartNodeConnection: (_, _) => true, managedGatewayProvider: new PreparedManagedProvider());
+        await manager.ConnectAsync(record.Id);
+        await InvokeHandshakeSucceededAsync(manager);
+        Assert.False(manager.CurrentSnapshot.NodeConnectionIntended);
+        Assert.Equal(RoleConnectionState.Disabled, manager.CurrentSnapshot.NodeState);
+        Assert.Equal(0, node.ConnectCount);
+        var client = Assert.IsAssignableFrom<OpenClawGatewayClient>(manager.OperatorClient);
+        Assert.NotNull(client.TransportAuthentication);
+        Assert.Equal(ManagedOperatorGrant.Scopes, client.RequiredOperatorScopes);
+        await manager.ConnectNodeOnlyAsync(record.Id);
+        Assert.Equal(0, node.ConnectCount);
+    }
+
+    private sealed class PreparedManagedProvider : IManagedGatewayProvider, IGatewayTransportAuthentication
+    {
+        public Task<GatewayRecord> PrepareAsync(GatewayRecord record, CancellationToken ct) => Task.FromResult(record);
+        public IGatewayTransportAuthentication CreateAuthentication(GatewayRecord record) => this;
+        public Uri HttpBaseUri => new("https://service.example/api/native/gateway");
+        public Task<IReadOnlyDictionary<string, string>> GetHeadersAsync(Uri target, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyDictionary<string, string>>(new Dictionary<string, string>());
+    }
+
+    [Fact]
     public async Task RegistrySettlementCannotDisconnectANewerConnectionSnapshot()
     {
         var before = _manager.CurrentSnapshot;

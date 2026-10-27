@@ -135,6 +135,7 @@ public class SettingsManager
 
     // Node mode(gateway WebSocket connection — separate from MCP)
     public bool EnableNodeMode { get => _data.EnableNodeMode; set => _data = _data with { EnableNodeMode = value }; }
+    public ManagedRemoteOptions? ManagedRemote => _data.ManagedRemote;
     /// <summary>Master switch for the focused inbound-pairing approval dialog + awareness toast.</summary>
     public bool ShowPairingApprovalDialog { get => _data.ShowPairingApprovalDialog; set => _data = _data with { ShowPairingApprovalDialog = value }; }
     public bool NodeCanvasEnabled { get => _data.NodeCanvasEnabled; set => _data = _data with { NodeCanvasEnabled = value }; }

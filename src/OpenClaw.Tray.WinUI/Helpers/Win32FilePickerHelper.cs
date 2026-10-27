@@ -109,7 +109,9 @@ internal static class Win32FilePickerHelper
         IntPtr ownerHwnd,
         string title = "Save as",
         string suggestedFileName = "",
-        string defaultExtension = "txt")
+        string defaultExtension = "txt",
+        string fileTypeDescription = "Text file (*.txt)",
+        string fileTypePattern = "*.txt")
     {
         var tcs = new TaskCompletionSource<string?>();
         var staThread = new Thread(() =>
@@ -124,7 +126,7 @@ internal static class Win32FilePickerHelper
                 if (!string.IsNullOrWhiteSpace(suggestedFileName))
                     dialog.SetFileName(suggestedFileName);
 
-                var filterSpec = new COMDLG_FILTERSPEC("Text file (*.txt)", "*.txt");
+                var filterSpec = new COMDLG_FILTERSPEC(fileTypeDescription, fileTypePattern);
                 filterSpecPtr = Marshal.AllocCoTaskMem(Marshal.SizeOf<COMDLG_FILTERSPEC>());
                 Marshal.StructureToPtr(filterSpec, filterSpecPtr, fDeleteOld: false);
                 dialog.SetFileTypes(1, filterSpecPtr);
